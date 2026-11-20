@@ -2,6 +2,7 @@ package com.apkauditor.app.data
 
 import android.graphics.Paint
 import android.graphics.pdf.PdfDocument
+import com.apkauditor.app.analysis.Format
 import com.apkauditor.app.model.AuditReport
 import java.io.OutputStream
 import java.text.SimpleDateFormat
@@ -19,11 +20,14 @@ object ReportExporter {
         sb.appendLine()
         sb.appendLine("- Paquete: `${r.packageName}`")
         sb.appendLine("- Versión: ${r.versionName} (${r.versionCode})")
-        sb.appendLine("- Tamaño: ${"%.1f".format(r.sizeBytes / 1024.0 / 1024.0)} MB")
+        sb.appendLine("- Tamaño: ${Format.humanSize(r.sizeBytes)}")
         sb.appendLine("- Fecha: ${dateFmt.format(Date(r.dateMillis))}")
         sb.appendLine("- minSdk: ${sdkOrUnknown(r.minSdk)} · targetSdk: ${sdkOrUnknown(r.targetSdk)}")
         sb.appendLine("- Debuggable: ${if (r.debuggable) "sí" else "no"}")
-        sb.appendLine("- **Score: ${r.score}/100**")
+        val breakdown = if (r.scoreHeuristic > 0) {
+            " (base ${r.scoreBase}, heurístico -${r.scoreHeuristic})"
+        } else ""
+        sb.appendLine("- **Score: ${r.score}/100**$breakdown")
         sb.appendLine()
         sb.appendLine("## Score")
         r.scoreNotes.forEach { sb.appendLine("- $it") }
@@ -38,12 +42,13 @@ object ReportExporter {
         sb.appendLine()
         sb.appendLine("## Componentes (${r.components.size})")
         r.components.forEach {
-            sb.appendLine("- ${it.type}: `${it.name}` (exportado: ${it.exported})")
+            val launcher = if (it.isLauncher) ", launcher" else ""
+            sb.appendLine("- ${it.type}: `${it.name}` (exportado: ${it.exported}$launcher)")
         }
         sb.appendLine()
         sb.appendLine("## Archivos del APK")
         r.zipZones.forEach {
-            sb.appendLine("- ${it.name}: ${it.files} archivos, ${human(it.bytes)}")
+            sb.appendLine("- ${it.name}: ${it.files} archivos, ${Format.humanSize(it.bytes)}")
         }
         sb.appendLine("- Archivos dex: ${r.dexCount}")
         sb.appendLine()
@@ -111,13 +116,4 @@ object ReportExporter {
     }
 
     private fun sdkOrUnknown(v: Int): String = if (v > 0) v.toString() else "?"
-
-    private fun human(bytes: Long): String {
-        if (bytes < 1024) return "$bytes B"
-        val kb = bytes / 1024.0
-        if (kb < 1024) return "%.1f KB".format(kb)
-        val mb = kb / 1024.0
-        if (mb < 1024) return "%.1f MB".format(mb)
-        return "%.2f GB".format(mb / 1024.0)
-    }
 }

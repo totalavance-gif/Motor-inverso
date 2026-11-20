@@ -16,10 +16,16 @@ y corre 100% en el teléfono: sin backend, sin instalar ni ejecutar el APK.
   META-INF, con tamaños.
 - **Firma**: certificados (sujeto, emisor, algoritmo, SHA-256, vigencia),
   múltiples firmantes.
-- **Ingeniería inversa ligera del dex**: URLs `http://`, IPs literales,
-  APIs sensibles (DexClassLoader, Runtime.exec, reflexión...), SDKs de
-  analítica/ads por nombre de paquete. Heurístico e informativo.
-- **Score 0-100** con fórmula documentada en
+- **Ingeniería inversa del dex**: parsea la tabla de strings exacta
+  (con respaldo a barrido en bruto). URLs `http://` validadas, IPs con
+  contexto, APIs sensibles, SDKs de analítica/ads, posibles secretos
+  (solo el tipo, nunca el valor) y menciones a root/análisis.
+  Heurístico e informativo.
+- **Manifest binario**: detecta activities lanzadoras (MAIN/LAUNCHER)
+  para no castigarlas como exportadas.
+- **Score 0-100** = base determinista (manifest + firma) + ajuste
+  heurístico (dex, marcado como tal). Referencia fija de targetSdk,
+  independiente del equipo. Fórmula documentada en
   `app/src/main/java/com/apkauditor/app/analysis/Scoring.kt`.
 
 ## Funciones
@@ -47,7 +53,7 @@ o un PC).
 
 ```sh
 echo "sdk.dir=/ruta/a/tu/Android-Sdk" > local.properties
-./gradlew testDebugUnitTest   # 10 tests unitarios puros
+./gradlew testDebugUnitTest   # 31 tests unitarios puros
 ./gradlew assembleDebug
 ```
 
@@ -76,9 +82,11 @@ tienes el APK listo en Actions.
 │       ├── main/java/com/apkauditor/app/
 │       │   ├── MainActivity.kt  # Navegación: Inicio + Reporte
 │       │   ├── model/           # Reporte y hallazgos
-│       │   ├── analysis/        # ApkAnalyzer, DexStrings, Scoring, PermissionData
+│       │   ├── analysis/        # ApkAnalyzer, DexParser, DexStrings, ManifestParser,
+│       │   │                       # Scoring, PermissionData, Format
 │       │   ├── data/            # Room, JSON (org.json), exportadores PDF/MD
 │       │   └── ui/              # HomeScreen, ReportScreen, ViewModel, tema
-│       └── test/                # 10 tests unitarios (JUnit4, sin emulador)
+│       └── test/                # 31 tests unitarios (JUnit4, sin emulador)
+│           └── resources/       # Manifest binario real como fixture
 └── .github/workflows/build-apk.yml
 ```

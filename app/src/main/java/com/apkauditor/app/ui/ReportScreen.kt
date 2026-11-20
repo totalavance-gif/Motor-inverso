@@ -42,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.apkauditor.app.analysis.Format
 import com.apkauditor.app.model.AuditReport
 import com.apkauditor.app.model.PermCategory
 import kotlinx.coroutines.launch
@@ -263,7 +264,7 @@ private fun SummaryCard(r: AuditReport) {
             }
             Spacer(Modifier.height(8.dp))
             Text("Archivo: ${r.fileName}")
-            Text("Tamaño: ${"%.1f".format(r.sizeBytes / 1024.0 / 1024.0)} MB")
+            Text("Tamaño: ${Format.humanSize(r.sizeBytes)}")
             Text("Fecha: $date")
             Text("Paquete: ${r.packageName}")
             Text("Versión: ${r.versionName} (${r.versionCode})")
@@ -271,6 +272,12 @@ private fun SummaryCard(r: AuditReport) {
             Text("Debuggable: ${if (r.debuggable) "sí" else "no"}")
             Spacer(Modifier.height(8.dp))
             Text("Por qué este score:", fontWeight = FontWeight.SemiBold)
+            if (r.scoreHeuristic > 0) {
+                Text(
+                    "Base: ${r.scoreBase} · heurístico: -${r.scoreHeuristic}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
             r.scoreNotes.forEach {
                 Text("• $it", style = MaterialTheme.typography.bodySmall)
             }

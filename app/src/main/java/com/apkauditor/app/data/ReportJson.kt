@@ -28,6 +28,8 @@ object ReportJson {
         o.put("dexCount", r.dexCount)
         o.put("hasMultipleSigners", r.hasMultipleSigners)
         o.put("score", r.score)
+        o.put("scoreBase", r.scoreBase)
+        o.put("scoreHeuristic", r.scoreHeuristic)
         o.put("permissions", JSONArray().apply {
             r.permissions.forEach {
                 put(JSONObject().put("name", it.name)
@@ -39,7 +41,8 @@ object ReportJson {
             r.components.forEach {
                 put(JSONObject().put("type", it.type)
                     .put("name", it.name)
-                    .put("exported", it.exported))
+                    .put("exported", it.exported)
+                    .put("isLauncher", it.isLauncher))
             }
         })
         o.put("zipZones", JSONArray().apply {
@@ -105,7 +108,10 @@ object ReportJson {
                 )
             },
             components = joArray("components").map {
-                ComponentInfo(it.optString("type"), it.optString("name"), it.optBoolean("exported"))
+                ComponentInfo(
+                    it.optString("type"), it.optString("name"),
+                    it.optBoolean("exported"), it.optBoolean("isLauncher")
+                )
             },
             zipZones = joArray("zipZones").map {
                 ZipZone(it.optString("name"), it.optInt("files"), it.optLong("bytes"))
@@ -134,7 +140,9 @@ object ReportJson {
             score = o.optInt("score"),
             scoreNotes = (o.optJSONArray("scoreNotes") ?: JSONArray()).let { a ->
                 (0 until a.length()).map { i -> a.optString(i) }
-            }
+            },
+            scoreBase = o.optInt("scoreBase", o.optInt("score")),
+            scoreHeuristic = o.optInt("scoreHeuristic")
         )
     }
 }

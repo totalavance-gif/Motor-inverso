@@ -30,10 +30,12 @@ object ApkAnalyzer {
 
     const val MAX_APK_BYTES = 500L * 1024 * 1024
 
+    /** Dex más grande que esto se barre en bruto en vez de parsearse exacto. */
+    private const val MAX_EXACT_DEX_BYTES = 64L * 1024 * 1024
+
     fun analyze(
         pm: PackageManager,
         apk: File,
-        currentSdk: Int = Build.VERSION.SDK_INT,
         onProgress: (Float, String) -> Unit = { _, _ -> }
     ): AuditReport {
         if (!apk.isFile) throw ApkAnalysisException("No se encontró el archivo temporal.")
@@ -52,7 +54,7 @@ object ApkAnalyzer {
             onProgress(0.65f + 0.3f * f, "Escaneando código...")
         }
         onProgress(0.97f, "Calculando score...")
-        return buildReport(apk, info, zip, certs, dex, currentSdk)
+        return buildReport(apk, info, zip, certs, dex)
     }
 
     private data class ArchiveData(
@@ -83,9 +85,11 @@ object ApkAnalyzer {
         } ?: throw ApkAnalysisException("El archivo no es un APK válido.")
 
         val app = info.applicationInfo
+        // Launcher desde el manifest binario (PackageManager no expone intent-filters).
+        val launchers = readManifestLaunchers(apk, info.packageName ?: "")
         val components = mutableListOf<ComponentInfo>()
         info.activities?.forEach {
-            components.add(ComponentInfo("Activity", it.name, it.exported))
+            components.add(ComponentInfo("Activity", it.name, it.exported, it.name in launchers))
         }
         info.services?.forEach {
             components.add(ComponentInfo("Service", it.name, it.exported))
@@ -126,6 +130,21 @@ object ApkAnalyzer {
             signatures = signatures,
             multipleSigners = multiple
         )
+    }
+
+    /** Lee el manifest binario del ZIP y extrae activities lanzadoras. */
+    private fun readManifestLaunchers(apk: File, packageName: String): Set<String> {
+        if (packageName.isEmpty()) return emptySet()
+        return try {
+            ZipFile(apk).use { zip ->
+                val entry = zip.getEntry("AndroidManifest.xml") ?: return emptySet()
+                if (entry.size < 0 || entry.size > 8L * 1024 * 1024) return emptySet()
+                val bytes = zip.getInputStream(entry).use { it.readBytes() }
+                ManifestParser.launcherActivities(bytes, packageName)
+            }
+        } catch (e: Exception) {
+            emptySet()
+        }
     }
 
     private data class ZipData(
@@ -216,6 +235,7 @@ object ApkAnalyzer {
     private data class DexData(
         val findings: List<DexFinding>,
         val truncated: Boolean,
+        val exactAll: Boolean,
         val httpCount: Int,
         val apiCount: Int,
         val trackerCount: Int
@@ -236,26 +256,46 @@ object ApkAnalyzer {
         var done = 0L
         val http = linkedSetOf<String>()
         var https = 0
-        val ips = linkedSetOf<String>()
+        val ips = linkedMapOf<String, String>()
         val apis = mutableMapOf<String, Int>()
         val trackers = linkedSetOf<String>()
+        val secrets = mutableMapOf<String, Int>()
+        val envSignals = linkedSetOf<String>()
         var truncated = false
+        var exactAll = true
         try {
             ZipFile(apk).use { zip ->
                 for (name in dexNames) {
                     val entry = zip.getEntry(name) ?: continue
-                    zip.getInputStream(entry).use { input ->
-                        val r = DexStrings.scan(input) { scanned ->
-                            onBytes(done + scanned, totalDex)
+                    val size = entry.size.coerceAtLeast(0)
+                    // Ruta exacta: parsear la tabla de strings. Si falla o el dex
+                    // es muy grande, respaldo al barrido en bruto por bloques.
+                    val bytes = if (size in 1..MAX_EXACT_DEX_BYTES) {
+                        runCatching {
+                            zip.getInputStream(entry).use { it.readBytes() }
+                        }.getOrNull()
+                    } else null
+                    val strings = bytes?.let { DexParser.readStrings(it) }
+                    val r = if (strings != null) {
+                        onBytes(done + size, totalDex)
+                        DexStrings.scanStrings(strings)
+                    } else {
+                        exactAll = false
+                        zip.getInputStream(entry).use { input ->
+                            DexStrings.scan(input) { scanned ->
+                                onBytes(done + scanned, totalDex)
+                            }
                         }
-                        http.addAll(r.httpUrls)
-                        https += r.httpsCount
-                        ips.addAll(r.ips)
-                        r.apis.forEach { (k, v) -> apis[k] = (apis[k] ?: 0) + v }
-                        trackers.addAll(r.trackers)
-                        truncated = truncated || r.truncated
                     }
-                    done += entry.size.coerceAtLeast(0)
+                    http.addAll(r.httpUrls)
+                    https += r.httpsCount
+                    r.ips.forEach { ips.putIfAbsent(it.ip, it.context) }
+                    r.apis.forEach { (k, v) -> apis[k] = (apis[k] ?: 0) + v }
+                    trackers.addAll(r.trackers)
+                    r.secrets.forEach { (k, v) -> secrets[k] = (secrets[k] ?: 0) + v }
+                    envSignals.addAll(r.envSignals)
+                    truncated = truncated || r.truncated
+                    done += size
                 }
             }
         } catch (e: Exception) {
@@ -269,7 +309,8 @@ object ApkAnalyzer {
             list.add(DexFinding("URLS_HTTPS", "Referencias https://", emptyList(), https))
         }
         if (ips.isNotEmpty()) {
-            list.add(DexFinding("IP", "Direcciones IP literales", ips.take(25), ips.size))
+            val samples = ips.map { (ip, ctx) -> "$ip ‹…$ctx…›" }
+            list.add(DexFinding("IP", "Direcciones IP literales", samples.take(25), ips.size))
         }
         apis.forEach { (label, n) ->
             list.add(DexFinding("API", label, emptyList(), n))
@@ -277,7 +318,22 @@ object ApkAnalyzer {
         if (trackers.isNotEmpty()) {
             list.add(DexFinding("TRACKER", "SDKs de analítica/ads", trackers.take(25), trackers.size))
         }
-        return DexData(list, truncated, http.size, apis.size, trackers.size)
+        secrets.forEach { (label, n) ->
+            // Sin muestras: el valor de un secreto jamás se copia al reporte.
+            list.add(DexFinding("SECRET", label, emptyList(), n))
+        }
+        if (envSignals.isNotEmpty()) {
+            list.add(
+                DexFinding(
+                    "ENV", "Menciones a root/análisis (posible detección de entorno)",
+                    envSignals.take(25), envSignals.size
+                )
+            )
+        }
+        return DexData(
+            list, truncated, exactAll, http.size,
+            DexStrings.scoredApiCount(apis), trackers.size
+        )
     }
 
     private fun buildReport(
@@ -285,24 +341,22 @@ object ApkAnalyzer {
         info: ArchiveData,
         zip: ZipData,
         certs: List<CertInfo>,
-        dex: DexData,
-        currentSdk: Int
+        dex: DexData
     ): AuditReport {
         val perms = info.permissions.map { PermissionData.classify(it) }
         val dangerous = perms.count { it.category == PermCategory.PELIGROSO }
         val special = perms.count { it.category == PermCategory.ESPECIAL }
-        val exported = info.components.count { it.exported }
+        val exported = Scoring.exportedNonLauncher(info.components)
         val certProblem = certs.any { it.expired || it.expiresSoon }
         val signed = certs.isNotEmpty()
 
-        val (score, notes) = Scoring.score(
+        val scored = Scoring.score(
             ScoreInput(
                 dangerousCount = dangerous,
                 specialCount = special,
                 exportedCount = exported,
                 debuggable = info.debuggable,
                 targetSdk = info.targetSdk,
-                currentSdk = currentSdk,
                 httpUrls = dex.httpCount,
                 sensitiveApis = dex.apiCount,
                 trackerCount = dex.trackerCount,
@@ -344,16 +398,17 @@ object ApkAnalyzer {
                     "Son accesos sensibles que Android concede aparte. Verifica que sean su función.")
             )
         }
-        if (info.targetSdk > 0 && currentSdk - info.targetSdk >= 2) {
+        if (info.targetSdk > 0 && Scoring.TARGET_BASELINE - info.targetSdk >= 2) {
             findings.add(
                 Finding("AVISO", "targetSdk desactualizado (${info.targetSdk})",
-                    "Tu equipo usa SDK $currentSdk. Un target viejo evita protecciones nuevas de Android.")
+                    "La referencia actual es SDK ${Scoring.TARGET_BASELINE} (lo que exige Play). " +
+                        "Un target viejo evita protecciones nuevas de Android.")
             )
         }
         if (exported > 0) {
             findings.add(
-                Finding("INFO", "Componentes exportados: $exported",
-                    "Otras apps pueden llamarlos. Es normal en launchers, revisa el resto.")
+                Finding("INFO", "Componentes exportados: $exported (sin contar el launcher)",
+                    "Otras apps pueden llamarlos. Revisa si cada uno necesita estar expuesto.")
             )
         }
         if (dex.httpCount > 0) {
@@ -372,6 +427,25 @@ object ApkAnalyzer {
             findings.add(
                 Finding("INFO", "SDKs de rastreo: ${dex.trackerCount}",
                     "Analítica o publicidad detectada por nombre de paquete (indicio, no certeza).")
+            )
+        }
+        val secretTotal = dex.findings.filter { it.kind == "SECRET" }.sumOf { it.count }
+        if (secretTotal > 0) {
+            findings.add(
+                Finding("AVISO", "Posibles secretos en el código: $secretTotal",
+                    "Claves o tokens con aspecto real dentro del dex. Cualquiera que abra el APK los lee.")
+            )
+        }
+        if (dex.findings.any { it.kind == "ENV" }) {
+            findings.add(
+                Finding("INFO", "El código menciona root/análisis",
+                    "El APK podría detectar root, emulador o instrumentación antes de correr.")
+            )
+        }
+        if (!dex.exactAll) {
+            findings.add(
+                Finding("INFO", "Escaneo aproximado en algún dex",
+                    "Un dex no se pudo parsear exacto y se barrió en bruto: esos conteos son aproximados.")
             )
         }
         if (zip.hasV1) {
@@ -410,8 +484,10 @@ object ApkAnalyzer {
             hasMultipleSigners = info.multipleSigners,
             dexFindings = dex.findings,
             findings = findings,
-            score = score,
-            scoreNotes = notes
+            score = scored.total,
+            scoreNotes = scored.notes,
+            scoreBase = scored.base,
+            scoreHeuristic = scored.heuristic
         )
     }
 }

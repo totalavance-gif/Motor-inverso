@@ -14,7 +14,8 @@ data class PermInfo(
 data class ComponentInfo(
     val type: String, // "Activity", "Service", "Receiver", "Provider"
     val name: String,
-    val exported: Boolean
+    val exported: Boolean,
+    val isLauncher: Boolean = false
 )
 
 /** Resumen de una zona del ZIP del APK. */
@@ -38,7 +39,7 @@ data class CertInfo(
 
 /** Hallazgo de ingeniería inversa sobre el dex. */
 data class DexFinding(
-    val kind: String, // "URL_HTTP", "URLS_HTTPS", "IP", "API", "TRACKER"
+    val kind: String, // "URL_HTTP", "URLS_HTTPS", "IP", "API", "TRACKER", "SECRET", "ENV"
     val label: String,
     val samples: List<String>,
     val count: Int
@@ -71,5 +72,7 @@ data class AuditReport(
     val dexFindings: List<DexFinding>,
     val findings: List<Finding>,
     val score: Int,
-    val scoreNotes: List<String>
+    val scoreNotes: List<String>,
+    val scoreBase: Int = 100,
+    val scoreHeuristic: Int = 0
 )
