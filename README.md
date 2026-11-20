@@ -16,13 +16,19 @@ y corre 100% en el teléfono: sin backend, sin instalar ni ejecutar el APK.
   META-INF, con tamaños.
 - **Firma**: certificados (sujeto, emisor, algoritmo, SHA-256, vigencia),
   múltiples firmantes.
-- **Ingeniería inversa del dex**: parsea la tabla de strings exacta
-  (con respaldo a barrido en bruto). URLs `http://` validadas, IPs con
-  contexto, APIs sensibles, SDKs de analítica/ads, posibles secretos
-  (solo el tipo, nunca el valor) y menciones a root/análisis.
-  Heurístico e informativo.
-- **Manifest binario**: detecta activities lanzadoras (MAIN/LAUNCHER)
-  para no castigarlas como exportadas.
+- **Ingeniería inversa del dex**: parsea tabla de strings, method_ids,
+  type_ids y class_defs (con respaldo a barrido en bruto). Referencias
+  exactas a APIs sensibles (exec, reflexión, cripto, RNG, debugger),
+  inventario de clases + % ofuscación, URLs validadas, dominios únicos
+  con hosts sospechosos, IPs con contexto, SDKs de analítica/ads,
+  secretos incl. JWT/Bearer (solo el tipo, nunca el valor), blobs
+  base64 con URL/binario, cripto débil, comandos de shell y menciones
+  a root/análisis. Heurístico e informativo.
+- **Manifest binario**: activities lanzadoras (MAIN/LAUNCHER),
+  intent-filters completos (acciones, categorías, schemes/deep links,
+  filtros sensibles), flags de application (backup, cleartext, legacy).
+- **Contenido y firma**: ABIs nativas (alerta sin 64-bit), archivos
+  plantados (droppers) y bloque de firma v2/v3 (alerta Janus solo-v1).
 - **Score 0-100** = base determinista (manifest + firma) + ajuste
   heurístico (dex, marcado como tal). Referencia fija de targetSdk,
   independiente del equipo. Fórmula documentada en
@@ -53,7 +59,7 @@ o un PC).
 
 ```sh
 echo "sdk.dir=/ruta/a/tu/Android-Sdk" > local.properties
-./gradlew testDebugUnitTest   # 31 tests unitarios puros
+./gradlew testDebugUnitTest   # 52 tests unitarios puros
 ./gradlew assembleDebug
 ```
 
@@ -82,11 +88,12 @@ tienes el APK listo en Actions.
 │       ├── main/java/com/apkauditor/app/
 │       │   ├── MainActivity.kt  # Navegación: Inicio + Reporte
 │       │   ├── model/           # Reporte y hallazgos
-│       │   ├── analysis/        # ApkAnalyzer, DexParser, DexStrings, ManifestParser,
-│       │   │                       # Scoring, PermissionData, Format
+│       │   ├── analysis/        # ApkAnalyzer, ApkContent, DexParser, DexRefs,
+│       │   │                       # DexStrings, Domains, Format, ManifestParser,
+│       │   │                       # Scoring, SigningBlock, PermissionData
 │       │   ├── data/            # Room, JSON (org.json), exportadores PDF/MD
 │       │   └── ui/              # HomeScreen, ReportScreen, ViewModel, tema
-│       └── test/                # 31 tests unitarios (JUnit4, sin emulador)
+│       └── test/                # 52 tests unitarios (JUnit4, sin emulador)
 │           └── resources/       # Manifest binario real como fixture
 └── .github/workflows/build-apk.yml
 ```

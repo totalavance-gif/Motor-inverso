@@ -39,7 +39,8 @@ data class CertInfo(
 
 /** Hallazgo de ingeniería inversa sobre el dex. */
 data class DexFinding(
-    val kind: String, // "URL_HTTP", "URLS_HTTPS", "IP", "API", "TRACKER", "SECRET", "ENV"
+    val kind: String, // "URL_HTTP", "URLS_HTTPS", "DOMAIN", "IP", "API", "CLASS",
+    // "TRACKER", "SECRET", "BLOB", "CRYPTO", "CMD", "ENV"
     val label: String,
     val samples: List<String>,
     val count: Int

@@ -1,5 +1,6 @@
 package com.apkauditor.app
 
+import com.apkauditor.app.analysis.DexRefs
 import com.apkauditor.app.analysis.DexStrings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -126,5 +127,89 @@ class DexStringsTest {
 
         val ok = DexStrings.scanStrings(listOf("nada", "http://api.ejemplo.com/x"))
         assertEquals(listOf("http://api.ejemplo.com/x"), ok.httpUrls)
+    }
+
+    @Test
+    fun jwt_y_bearer_sin_guardar_valores() {
+        val jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0." +
+            "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        val blob = "tok=$jwt auth=Bearer abcdefghijklmnopqrstuvwx fin"
+            .toByteArray(Charsets.ISO_8859_1)
+        val r = DexStrings.scan(blob.inputStream())
+        assertEquals(1, r.secrets["Token JWT"])
+        assertEquals(1, r.secrets["Token Bearer"])
+        assertFalse(r.toString().contains("SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"))
+    }
+
+    @Test
+    fun blob_base64_con_url_se_reporta_y_ruido_no() {
+        val withUrl = java.util.Base64.getEncoder().encodeToString(
+            "http://oculto.ejemplo.com/ruta-secreta-con-relleno-0123456789".toByteArray()
+        )
+        assertTrue(withUrl.length >= 80)
+        val r = DexStrings.scanStrings(listOf("x", withUrl))
+        assertEquals(1, r.blobs["Blob base64 con URL"])
+
+        val noise = DexStrings.scanStrings(listOf("A".repeat(100)))
+        assertTrue(noise.blobs.isEmpty())
+    }
+
+    @Test
+    fun cripto_tokens_sin_falsos() {
+        val r = DexStrings.scanStrings(
+            listOf("usa DES y MD5, evita AES/ECB; description sin nada")
+        )
+        assertEquals(1, r.crypto["DES"])
+        assertEquals(1, r.crypto["MD5"])
+        assertEquals(1, r.crypto["AES/ECB"])
+
+        val clean = DexStrings.scanStrings(listOf("description", "SHAPE-1"))
+        assertTrue(clean.crypto.isEmpty())
+    }
+
+    @Test
+    fun shell_comandos() {
+        val r = DexStrings.scanStrings(
+            listOf("run pm install /sdcard/x.apk y getprop ro.build fin")
+        )
+        assertEquals(1, r.shellCmds["pm install"])
+        assertEquals(1, r.shellCmds["getprop"])
+        val clean = DexStrings.scanStrings(listOf("getproperty"))
+        assertTrue(clean.shellCmds.isEmpty())
+    }
+
+    @Test
+    fun tracker_exige_limite_de_paquete() {
+        val no = DexStrings.scanStrings(listOf("zzzLcom/flurryyy"), emptyList())
+        assertTrue(no.trackers.isEmpty())
+        val yes = DexStrings.scanStrings(listOf("Lcom/flurry/A;"), emptyList())
+        assertEquals(listOf("Flurry"), yes.trackers)
+    }
+
+    @Test
+    fun https_guarda_muestras() {
+        val r = DexStrings.scanStrings(listOf("ir a https://seguro.ejemplo.com/a ya"))
+        assertEquals(1, r.httpsCount)
+        assertEquals(listOf("https://seguro.ejemplo.com/a"), r.httpsUrls)
+    }
+
+    @Test
+    fun apis_exactas_ignoran_substrings() {
+        val r = DexStrings.scanStrings(
+            listOf("Ljava/lang/Runtime;->exec"),
+            listOf(DexRefs.MethodRef("Ljava/lang/Runtime;", "exec"))
+        )
+        assertEquals(1, r.apis["Ejecución de comandos (Runtime.exec)"])
+
+        // substring sin referencia exacta: no cuenta
+        val none = DexStrings.scanStrings(listOf("Ljava/lang/Runtime;->exec"), emptyList())
+        assertTrue(none.apis.isEmpty())
+        assertEquals(0, DexStrings.scoredApiCount(none.apis))
+    }
+
+    @Test
+    fun userinfo_pasa_para_marcarse() {
+        val r = DexStrings.scanStrings(listOf("ir a http://admin@huesped.com/ ya"))
+        assertEquals(listOf("http://admin@huesped.com/"), r.httpUrls)
     }
 }

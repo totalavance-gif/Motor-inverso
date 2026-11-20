@@ -48,8 +48,10 @@ object ApkAnalyzer {
         val zip = readZip(apk)
         onProgress(0.55f, "Verificando firma...")
         val certs = readCerts(info)
+        onProgress(0.6f, "Leyendo manifest...")
+        val manifestBytes = readManifestBytes(apk)
         onProgress(0.65f, "Escaneando código...")
-        val dex = scanDex(apk, zip.dexNames) { done, total ->
+        val dex = scanDex(apk, zip.dexNames, info.packageName, manifestBytes) { done, total ->
             val f = if (total > 0) done.toFloat() / total else 0f
             onProgress(0.65f + 0.3f * f, "Escaneando código...")
         }
@@ -135,15 +137,19 @@ object ApkAnalyzer {
     /** Lee el manifest binario del ZIP y extrae activities lanzadoras. */
     private fun readManifestLaunchers(apk: File, packageName: String): Set<String> {
         if (packageName.isEmpty()) return emptySet()
+        val bytes = readManifestBytes(apk) ?: return emptySet()
+        return ManifestParser.launcherActivities(bytes, packageName)
+    }
+
+    private fun readManifestBytes(apk: File): ByteArray? {
         return try {
             ZipFile(apk).use { zip ->
-                val entry = zip.getEntry("AndroidManifest.xml") ?: return emptySet()
-                if (entry.size < 0 || entry.size > 8L * 1024 * 1024) return emptySet()
-                val bytes = zip.getInputStream(entry).use { it.readBytes() }
-                ManifestParser.launcherActivities(bytes, packageName)
+                val entry = zip.getEntry("AndroidManifest.xml") ?: return null
+                if (entry.size < 0 || entry.size > 8L * 1024 * 1024) return null
+                zip.getInputStream(entry).use { it.readBytes() }
             }
         } catch (e: Exception) {
-            emptySet()
+            null
         }
     }
 
@@ -151,12 +157,16 @@ object ApkAnalyzer {
         val zones: List<ZipZone>,
         val dexNames: List<String>,
         val dexCount: Int,
-        val hasV1: Boolean
+        val hasV1: Boolean,
+        val hasV2: Boolean,
+        val abis: Set<String>,
+        val droppers: List<String>
     )
 
     private fun readZip(apk: File): ZipData {
         val zones = linkedMapOf<String, Pair<Int, Long>>()
         val dexNames = mutableListOf<String>()
+        val entryNames = mutableListOf<String>()
         var hasV1 = false
         try {
             ZipFile(apk).use { zip ->
@@ -165,6 +175,7 @@ object ApkAnalyzer {
                     val e = entries.nextElement()
                     if (e.isDirectory) continue
                     val name = e.name
+                    entryNames.add(name)
                     val zone = when {
                         name == "AndroidManifest.xml" -> "Manifest"
                         name == "resources.arsc" -> "Recursos"
@@ -196,7 +207,10 @@ object ApkAnalyzer {
             zones = zones.map { ZipZone(it.key, it.value.first, it.value.second) },
             dexNames = dexNames,
             dexCount = dexNames.size,
-            hasV1 = hasV1
+            hasV1 = hasV1,
+            hasV2 = SigningBlock.hasSigningBlock(apk),
+            abis = ApkContent.abisOf(entryNames),
+            droppers = ApkContent.dropperFiles(entryNames)
         )
     }
 
@@ -238,12 +252,22 @@ object ApkAnalyzer {
         val exactAll: Boolean,
         val httpCount: Int,
         val apiCount: Int,
-        val trackerCount: Int
+        val trackerCount: Int,
+        val crypto: Map<String, Int>,
+        val shellCmds: Map<String, Int>,
+        val blobs: Map<String, Int>,
+        val domains: Domains.Result,
+        val classCount: Int,
+        val obfuscationPct: Int,
+        val filters: List<ManifestParser.FilterInfo>,
+        val appFlags: ManifestParser.AppFlags
     )
 
     private fun scanDex(
         apk: File,
         dexNames: List<String>,
+        packageName: String,
+        manifestBytes: ByteArray?,
         onBytes: (Long, Long) -> Unit
     ): DexData {
         val totalDex = try {
@@ -256,11 +280,16 @@ object ApkAnalyzer {
         var done = 0L
         val http = linkedSetOf<String>()
         var https = 0
+        val httpsUrls = linkedSetOf<String>()
         val ips = linkedMapOf<String, String>()
         val apis = mutableMapOf<String, Int>()
         val trackers = linkedSetOf<String>()
         val secrets = mutableMapOf<String, Int>()
         val envSignals = linkedSetOf<String>()
+        val crypto = mutableMapOf<String, Int>()
+        val shellCmds = mutableMapOf<String, Int>()
+        val blobs = mutableMapOf<String, Int>()
+        val classes = linkedSetOf<String>()
         var truncated = false
         var exactAll = true
         try {
@@ -276,9 +305,12 @@ object ApkAnalyzer {
                         }.getOrNull()
                     } else null
                     val strings = bytes?.let { DexParser.readStrings(it) }
-                    val r = if (strings != null) {
+                    val r = if (strings != null && bytes != null) {
                         onBytes(done + size, totalDex)
-                        DexStrings.scanStrings(strings)
+                        val methods = DexRefs.readMethods(bytes, strings)
+                        if (methods == null) exactAll = false
+                        DexRefs.readClasses(bytes, strings)?.let { classes.addAll(it) }
+                        DexStrings.scanStrings(strings, methods)
                     } else {
                         exactAll = false
                         zip.getInputStream(entry).use { input ->
@@ -289,11 +321,15 @@ object ApkAnalyzer {
                     }
                     http.addAll(r.httpUrls)
                     https += r.httpsCount
+                    httpsUrls.addAll(r.httpsUrls)
                     r.ips.forEach { ips.putIfAbsent(it.ip, it.context) }
                     r.apis.forEach { (k, v) -> apis[k] = (apis[k] ?: 0) + v }
                     trackers.addAll(r.trackers)
                     r.secrets.forEach { (k, v) -> secrets[k] = (secrets[k] ?: 0) + v }
                     envSignals.addAll(r.envSignals)
+                    r.crypto.forEach { (k, v) -> crypto[k] = (crypto[k] ?: 0) + v }
+                    r.shellCmds.forEach { (k, v) -> shellCmds[k] = (shellCmds[k] ?: 0) + v }
+                    r.blobs.forEach { (k, v) -> blobs[k] = (blobs[k] ?: 0) + v }
                     truncated = truncated || r.truncated
                     done += size
                 }
@@ -301,12 +337,24 @@ object ApkAnalyzer {
         } catch (e: Exception) {
             // Si un dex no se puede leer, se sigue con un aviso.
         }
+        val domains = Domains.analyze((http + httpsUrls).toList())
+        val obfuscation = DexRefs.obfuscationPct(classes.toList())
+        val filters = manifestBytes?.let {
+            ManifestParser.readIntentFilters(it, packageName)
+        } ?: emptyList()
+        val appFlags = manifestBytes?.let { ManifestParser.readAppFlags(it) }
+            ?: ManifestParser.AppFlags(null, null, null, null)
+
         val list = mutableListOf<DexFinding>()
         if (http.isNotEmpty()) {
             list.add(DexFinding("URL_HTTP", "URLs http:// sin cifrar", http.take(25), http.size))
         }
         if (https > 0) {
-            list.add(DexFinding("URLS_HTTPS", "Referencias https://", emptyList(), https))
+            list.add(DexFinding("URLS_HTTPS", "Referencias https://", httpsUrls.take(25), https))
+        }
+        if (domains.domains.isNotEmpty()) {
+            val samples = (domains.domains.take(15) + domains.suspicious.take(10)).distinct()
+            list.add(DexFinding("DOMAIN", "Dominios únicos", samples.take(25), domains.domains.size))
         }
         if (ips.isNotEmpty()) {
             val samples = ips.map { (ip, ctx) -> "$ip ‹…$ctx…›" }
@@ -315,12 +363,29 @@ object ApkAnalyzer {
         apis.forEach { (label, n) ->
             list.add(DexFinding("API", label, emptyList(), n))
         }
+        if (classes.isNotEmpty()) {
+            val label = if (obfuscation >= 0) {
+                "Clases: ${classes.size} (ofuscación $obfuscation%)"
+            } else {
+                "Clases: ${classes.size}"
+            }
+            list.add(DexFinding("CLASS", label, classes.take(10).toList(), classes.size))
+        }
         if (trackers.isNotEmpty()) {
             list.add(DexFinding("TRACKER", "SDKs de analítica/ads", trackers.take(25), trackers.size))
         }
         secrets.forEach { (label, n) ->
             // Sin muestras: el valor de un secreto jamás se copia al reporte.
             list.add(DexFinding("SECRET", label, emptyList(), n))
+        }
+        blobs.forEach { (label, n) ->
+            list.add(DexFinding("BLOB", label, emptyList(), n))
+        }
+        crypto.forEach { (label, n) ->
+            list.add(DexFinding("CRYPTO", "Cripto débil: $label", emptyList(), n))
+        }
+        shellCmds.forEach { (label, n) ->
+            list.add(DexFinding("CMD", "Comando de shell: $label", emptyList(), n))
         }
         if (envSignals.isNotEmpty()) {
             list.add(
@@ -331,8 +396,20 @@ object ApkAnalyzer {
             )
         }
         return DexData(
-            list, truncated, exactAll, http.size,
-            DexStrings.scoredApiCount(apis), trackers.size
+            findings = list,
+            truncated = truncated,
+            exactAll = exactAll,
+            httpCount = http.size,
+            apiCount = DexStrings.scoredApiCount(apis),
+            trackerCount = trackers.size,
+            crypto = crypto,
+            shellCmds = shellCmds,
+            blobs = blobs,
+            domains = domains,
+            classCount = classes.size,
+            obfuscationPct = obfuscation,
+            filters = filters,
+            appFlags = appFlags
         )
     }
 
@@ -448,10 +525,116 @@ object ApkAnalyzer {
                     "Un dex no se pudo parsear exacto y se barrió en bruto: esos conteos son aproximados.")
             )
         }
-        if (zip.hasV1) {
+        if (zip.hasV1 && zip.hasV2) {
             findings.add(
-                Finding("INFO", "Firma v1 presente",
-                    "Tiene firma JAR (META-INF). Los APKs modernos suelen sumar v2/v3.")
+                Finding("INFO", "Firma v1+v2/v3",
+                    "Firma JAR más bloque de firma moderno. Esquema completo.")
+            )
+        } else if (zip.hasV1) {
+            if (info.minSdk in 1..25) {
+                findings.add(
+                    Finding("AVISO", "Solo firma v1 (Janus)",
+                        "Sin bloque v2/v3 y minSdk ${info.minSdk}: instalable en Android < 8.1, " +
+                            "vulnerable a Janus (CVE-2017-13156).")
+                )
+            } else {
+                findings.add(
+                    Finding("INFO", "Solo firma v1",
+                        "Tiene firma JAR (META-INF) pero no bloque v2/v3.")
+                )
+            }
+        } else if (zip.hasV2 && info.minSdk in 1..23) {
+            findings.add(
+                Finding("AVISO", "Sin firma v1",
+                    "Solo trae bloque v2/v3: no instala en Android < 7.0 (minSdk ${info.minSdk}).")
+            )
+        }
+        if (zip.abis.isNotEmpty()) {
+            findings.add(
+                Finding("INFO", "ABIs nativas: ${zip.abis.sorted().joinToString()}",
+                    if (ApkContent.missing64Bit(zip.abis)) {
+                        "Solo 32-bit: Play exige 64-bit desde 2019."
+                    } else {
+                        "Incluye 64-bit."
+                    })
+            )
+            if (ApkContent.missing64Bit(zip.abis)) {
+                findings.add(
+                    Finding("AVISO", "Nativas sin 64-bit",
+                        "Play exige arm64-v8a desde 2019; este APK no lo trae.")
+                )
+            }
+        }
+        if (zip.droppers.isNotEmpty()) {
+            findings.add(
+                Finding("AVISO", "Archivos plantados: ${zip.droppers.size}",
+                    "Ejecutables escondidos entre recursos: " +
+                        zip.droppers.take(5).joinToString() + ".")
+            )
+        }
+        if (dex.crypto.isNotEmpty()) {
+            findings.add(
+                Finding("AVISO", "Cripto débil en el código",
+                    "Algoritmos rotos o débiles mencionados: " +
+                        dex.crypto.keys.joinToString() + ".")
+            )
+        }
+        if (dex.shellCmds.isNotEmpty()) {
+            findings.add(
+                Finding("INFO", "Comandos de shell en el código",
+                    dex.shellCmds.keys.take(5).joinToString() + ". Revisa su uso.")
+            )
+        }
+        if (dex.blobs.isNotEmpty()) {
+            findings.add(
+                Finding("INFO", "Blobs base64 con contenido",
+                    dex.blobs.entries.joinToString { "${it.key} (×${it.value})" } + ".")
+            )
+        }
+        if (dex.domains.suspicious.isNotEmpty()) {
+            findings.add(
+                Finding("AVISO", "Hosts sospechosos: ${dex.domains.suspicious.size}",
+                    dex.domains.suspicious.take(3).joinToString("; ") + ".")
+            )
+        }
+        if (dex.obfuscationPct >= 70 && dex.classCount > 10) {
+            findings.add(
+                Finding("INFO", "Código ofuscado (${dex.obfuscationPct}%)",
+                    "La mayoría de clases tiene nombre corto (R8/ProGuard). " +
+                        "El análisis de strings sigue valiendo; las clases no se leen.")
+            )
+        }
+        val schemes = dex.filters.flatMap { it.schemes }.distinct()
+        if (schemes.isNotEmpty()) {
+            findings.add(
+                Finding("INFO", "Deep links/schemes: ${schemes.size}",
+                    schemes.take(10).joinToString() + ".")
+            )
+        }
+        dex.filters.forEach { f ->
+            f.actions.intersect(ManifestParser.DANGEROUS_ACTIONS).forEach { a ->
+                findings.add(
+                    Finding("AVISO", "Filtro sensible: ${a.substringAfterLast('.')}",
+                        "${f.component} escucha $a.")
+                )
+            }
+        }
+        if (dex.appFlags.allowBackup == true) {
+            findings.add(
+                Finding("AVISO", "allowBackup=true",
+                    "Los datos se pueden extraer con adb backup en equipos viejos.")
+            )
+        }
+        if (dex.appFlags.usesCleartextTraffic == true) {
+            findings.add(
+                Finding("AVISO", "usesCleartextTraffic=true",
+                    "La app permite tráfico http:// sin cifrar por manifiesto.")
+            )
+        }
+        if (dex.appFlags.legacyStorage == true) {
+            findings.add(
+                Finding("AVISO", "requestLegacyExternalStorage=true",
+                    "Usa almacenamiento externo amplio (obsoleto desde Android 11).")
             )
         }
         if (dex.truncated) {

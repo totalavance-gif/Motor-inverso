@@ -2,6 +2,7 @@ package com.apkauditor.app
 
 import com.apkauditor.app.analysis.ManifestParser
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
@@ -59,11 +60,81 @@ class ManifestParserTest {
         )
     }
 
+    @Test
+    fun fixture_flags() {
+        val bytes = javaClass.getResourceAsStream("/launcher-manifest.xml")!!.readBytes()
+        val f = ManifestParser.readAppFlags(bytes)
+        assertEquals(true, f.debuggable)
+        assertEquals(false, f.allowBackup)
+        assertEquals(false, f.usesCleartextTraffic)
+        assertNull(f.legacyStorage)
+    }
+
+    @Test
+    fun fixture_filtros() {
+        val bytes = javaClass.getResourceAsStream("/launcher-manifest.xml")!!.readBytes()
+        val fs = ManifestParser.readIntentFilters(bytes, "com.nexos.youtubeblocker")
+        assertEquals(1, fs.size)
+        assertEquals("com.nexos.youtubeblocker.MainActivity", fs[0].component)
+        assertEquals(listOf("android.intent.action.MAIN"), fs[0].actions)
+        assertEquals(listOf("android.intent.category.LAUNCHER"), fs[0].categories)
+        assertTrue(fs[0].schemes.isEmpty())
+    }
+
+    @Test
+    fun sintetico_flags_y_filtros() {
+        val pool = listOf(
+            "application", "debuggable", "allowBackup", "receiver", ".Boot",
+            "intent-filter", "action", "android.intent.action.BOOT_COMPLETED",
+            "data", "scheme", "myapp"
+        )
+        val axml = buildAxml(pool) { w, ix ->
+            startElement(
+                w, ix("application"),
+                listOf(
+                    boolAttr(ManifestParser.ATTR_DEBUGGABLE_RESID, 1),
+                    boolAttr(ManifestParser.ATTR_ALLOWBACKUP_RESID, 0)
+                )
+            )
+            endElement(w, ix("application"))
+            startElement(w, ix("receiver"), listOf(nameAttr(ix(".Boot"))))
+            startElement(w, ix("intent-filter"), emptyList())
+            startElement(
+                w, ix("action"),
+                listOf(nameAttr(ix("android.intent.action.BOOT_COMPLETED")))
+            )
+            endElement(w, ix("action"))
+            startElement(
+                w, ix("data"),
+                listOf(Attr(ManifestParser.ATTR_SCHEME_RESID, 3, ix("myapp")))
+            )
+            endElement(w, ix("data"))
+            endElement(w, ix("intent-filter"))
+            endElement(w, ix("receiver"))
+        }
+        val f = ManifestParser.readAppFlags(axml)
+        assertEquals(true, f.debuggable)
+        assertEquals(false, f.allowBackup)
+        assertNull(f.usesCleartextTraffic)
+        assertEquals(
+            listOf(
+                ManifestParser.FilterInfo(
+                    "com.ejemplo.Boot",
+                    listOf("android.intent.action.BOOT_COMPLETED"),
+                    emptyList(), listOf("myapp")
+                )
+            ),
+            ManifestParser.readIntentFilters(axml, "com.ejemplo")
+        )
+    }
+
     // ---- Mini constructor de AXML ----
 
-    private data class Attr(val nameResid: Int, val valueIx: Int)
+    private data class Attr(val nameResid: Int, val dataType: Int, val data: Int)
 
-    private fun nameAttr(valueIx: Int) = Attr(ManifestParser.ATTR_NAME_RESID, valueIx)
+    private fun nameAttr(valueIx: Int) = Attr(ManifestParser.ATTR_NAME_RESID, 3, valueIx)
+
+    private fun boolAttr(resid: Int, v: Int) = Attr(resid, 0x12, v)
 
     private fun buildAxml(pool: List<String>, body: (ByteArrayOutputStream, (String) -> Int) -> Unit): ByteArray {
         val ix = { s: String -> pool.indexOf(s) }
@@ -122,8 +193,8 @@ class ManifestParserTest {
             putU32(w, 0x01010000)
             putU32(w, it.nameResid)
             putU32(w, 0xFFFFFFFF.toInt())
-            putU32(w, 8 or (3 shl 24))
-            putU32(w, it.valueIx)
+            putU32(w, 8 or (it.dataType shl 24))
+            putU32(w, it.data)
         }
     }
 
