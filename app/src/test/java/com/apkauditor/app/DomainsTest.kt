@@ -2,6 +2,7 @@ package com.apkauditor.app
 
 import com.apkauditor.app.analysis.Domains
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -37,5 +38,15 @@ class DomainsTest {
         assertTrue(r.suspicious.any { it.contains("puerto") })
         assertTrue(r.suspicious.any { it.contains("TLD") })
         assertTrue(r.suspicious.any { it.contains("punycode") })
+    }
+
+    @Test
+    fun loopback_exento() {
+        val r = Domains.analyze(listOf("http://127.0.0.1:8787/", "http://localhost:8080/a"))
+        assertEquals(listOf("127.0.0.1", "localhost"), r.domains)
+        assertTrue(r.suspicious.isEmpty())
+        assertTrue(Domains.isLoopbackUrl("http://[::1]/"))
+        assertTrue(Domains.isLoopbackUrl("http://127.0.0.1/"))
+        assertFalse(Domains.isLoopbackUrl("http://192.168.1.1/"))
     }
 }

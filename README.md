@@ -59,7 +59,7 @@ o un PC).
 
 ```sh
 echo "sdk.dir=/ruta/a/tu/Android-Sdk" > local.properties
-./gradlew testDebugUnitTest   # 52 tests unitarios puros
+./gradlew testDebugUnitTest   # 57 tests unitarios puros
 ./gradlew assembleDebug
 ```
 
@@ -93,7 +93,7 @@ tienes el APK listo en Actions.
 │       │   │                       # Scoring, SigningBlock, PermissionData
 │       │   ├── data/            # Room, JSON (org.json), exportadores PDF/MD
 │       │   └── ui/              # HomeScreen, ReportScreen, ViewModel, tema
-│       └── test/                # 52 tests unitarios (JUnit4, sin emulador)
+│       └── test/                # 57 tests unitarios (JUnit4, sin emulador)
 │           └── resources/       # Manifest binario real como fixture
 └── .github/workflows/build-apk.yml
 ```

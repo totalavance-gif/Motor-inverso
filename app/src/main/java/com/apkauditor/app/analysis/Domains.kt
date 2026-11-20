@@ -49,7 +49,19 @@ object Domains {
         return parts[1].toIntOrNull()
     }
 
+    /** localhost y loopback: tráfico local, no sospechoso ni puntuable. */
+    fun isLoopbackUrl(url: String): Boolean {
+        val host = hostOf(url)?.lowercase() ?: return false
+        if (host == "localhost") return true
+        val bare = host.removePrefix("[").removeSuffix("]")
+        if (bare == "::1") return true
+        val parts = bare.split(".")
+        return parts.size == 4 && parts[0] == "127" &&
+            parts.all { it.toIntOrNull() in 0..255 }
+    }
+
     private fun flag(url: String, host: String): String? {
+        if (isLoopbackUrl(url)) return null
         val lower = host.lowercase()
         if (isIpLiteral(lower)) return "host es IP literal"
         val authority = url.substringAfter("://", "").substringBefore('/')

@@ -212,4 +212,47 @@ class DexStringsTest {
         val r = DexStrings.scanStrings(listOf("ir a http://admin@huesped.com/ ya"))
         assertEquals(listOf("http://admin@huesped.com/"), r.httpUrls)
     }
+
+    @Test
+    fun recorta_puntuacion_final() {
+        val r = DexStrings.scanStrings(
+            listOf("mira https://ejemplo.com/a. y (http://b.cc/x).")
+        )
+        assertEquals(listOf("https://ejemplo.com/a"), r.httpsUrls)
+        assertEquals(listOf("http://b.cc/x"), r.httpUrls)
+    }
+
+    @Test
+    fun namespaces_se_separan() {
+        val r = DexStrings.scanStrings(
+            listOf(
+                "http://dashif.org/guidelines/x",
+                "http://schemas.android.com/apk/res/android",
+                "http://ns.adobe.com/xap/1.0/",
+                "http://www.w3.org/1999/xhtml",
+                "http://api.ejemplo.com/x"
+            )
+        )
+        assertEquals(4, r.nsUrls.size)
+        assertEquals(listOf("http://api.ejemplo.com/x"), r.httpUrls)
+    }
+
+    @Test
+    fun ip_filtra_oid_y_versiones() {
+        assertTrue(DexStrings.scanStrings(listOf("oid 1.3.6.1.4.1 fin")).ips.isEmpty())
+        assertTrue(DexStrings.scanStrings(listOf("Chrome/124.0.0.0 Safari")).ips.isEmpty())
+        assertTrue(DexStrings.scanStrings(listOf("Tizen 4.0.0.2)")).ips.isEmpty())
+        assertTrue(DexStrings.scanStrings(listOf("Version 2.5.29.37 x")).ips.isEmpty())
+        assertTrue(DexStrings.scanStrings(listOf("\"Not?A_Brand\";v=\"24.0.0.0\"")).ips.isEmpty())
+        assertTrue(DexStrings.scanStrings(listOf("140.0.0.0")).ips.isEmpty())
+        val ok = DexStrings.scanStrings(listOf("ip 10.0.2.2 ok"))
+        assertEquals(listOf("10.0.2.2"), ok.ips.map { it.ip })
+    }
+
+    @Test
+    fun ip_host_tras_scheme_se_mantiene() {
+        val r = DexStrings.scanStrings(listOf("conectar http://10.0.2.2:8080/x"))
+        assertEquals(listOf("10.0.2.2"), r.ips.map { it.ip })
+        assertEquals(listOf("http://10.0.2.2:8080/x"), r.httpUrls)
+    }
 }

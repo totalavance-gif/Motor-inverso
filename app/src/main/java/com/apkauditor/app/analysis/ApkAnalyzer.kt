@@ -279,6 +279,7 @@ object ApkAnalyzer {
         }
         var done = 0L
         val http = linkedSetOf<String>()
+        val nsUrls = linkedSetOf<String>()
         var https = 0
         val httpsUrls = linkedSetOf<String>()
         val ips = linkedMapOf<String, String>()
@@ -320,6 +321,7 @@ object ApkAnalyzer {
                         }
                     }
                     http.addAll(r.httpUrls)
+                    nsUrls.addAll(r.nsUrls)
                     https += r.httpsCount
                     httpsUrls.addAll(r.httpsUrls)
                     r.ips.forEach { ips.putIfAbsent(it.ip, it.context) }
@@ -345,9 +347,25 @@ object ApkAnalyzer {
         val appFlags = manifestBytes?.let { ManifestParser.readAppFlags(it) }
             ?: ManifestParser.AppFlags(null, null, null, null)
 
+        // Loopback (127.0.0.1, localhost) es tráfico local: se lista en
+        // dominios pero no cuenta como tráfico sin cifrar.
+        val httpTraffic = http.filter { !Domains.isLoopbackUrl(it) }
         val list = mutableListOf<DexFinding>()
-        if (http.isNotEmpty()) {
-            list.add(DexFinding("URL_HTTP", "URLs http:// sin cifrar", http.take(25), http.size))
+        if (httpTraffic.isNotEmpty()) {
+            list.add(
+                DexFinding(
+                    "URL_HTTP", "URLs http:// sin cifrar",
+                    httpTraffic.take(25), httpTraffic.size
+                )
+            )
+        }
+        if (nsUrls.isNotEmpty()) {
+            list.add(
+                DexFinding(
+                    "URL_NS", "Namespaces/identificadores (no tráfico)",
+                    nsUrls.take(25), nsUrls.size
+                )
+            )
         }
         if (https > 0) {
             list.add(DexFinding("URLS_HTTPS", "Referencias https://", httpsUrls.take(25), https))
@@ -364,12 +382,12 @@ object ApkAnalyzer {
             list.add(DexFinding("API", label, emptyList(), n))
         }
         if (classes.isNotEmpty()) {
-            val label = if (obfuscation >= 0) {
-                "Clases: ${classes.size} (ofuscación $obfuscation%)"
-            } else {
-                "Clases: ${classes.size}"
-            }
-            list.add(DexFinding("CLASS", label, classes.take(10).toList(), classes.size))
+            list.add(
+                DexFinding(
+                    "CLASS", "Clases (ofuscación $obfuscation%)",
+                    classes.take(10).toList(), classes.size
+                )
+            )
         }
         if (trackers.isNotEmpty()) {
             list.add(DexFinding("TRACKER", "SDKs de analítica/ads", trackers.take(25), trackers.size))
@@ -399,7 +417,7 @@ object ApkAnalyzer {
             findings = list,
             truncated = truncated,
             exactAll = exactAll,
-            httpCount = http.size,
+            httpCount = httpTraffic.size,
             apiCount = DexStrings.scoredApiCount(apis),
             trackerCount = trackers.size,
             crypto = crypto,

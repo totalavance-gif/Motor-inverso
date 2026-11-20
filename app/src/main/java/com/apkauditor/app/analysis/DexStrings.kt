@@ -18,6 +18,7 @@ object DexStrings {
 
     data class Result(
         val httpUrls: List<String>,
+        val nsUrls: List<String>, // http que son namespaces/identificadores, no tráfico
         val httpsCount: Int,
         val httpsUrls: List<String>, // muestras validadas (para dominios)
         val ips: List<IpHit>,
@@ -151,6 +152,7 @@ object DexStrings {
 
     private class Acc {
         val httpUrls = linkedSetOf<String>()
+        val nsUrls = linkedSetOf<String>()
         var httpsCount = 0
         val httpsUrls = linkedSetOf<String>()
         val ips = linkedMapOf<String, String>() // ip -> contexto
@@ -228,20 +230,25 @@ object DexStrings {
      */
     private fun detect(text: String, fromIndex: Int, acc: Acc, exactTrackers: Boolean = false) {
         httpRe.findAll(text).forEach {
-            if (validHttpUrl(it.value) && acc.httpUrls.size < MAX_SAMPLES) {
-                acc.httpUrls.add(trimUrl(it.value))
+            val clean = stripTrailingPunct(it.value)
+            if (!validHttpUrl(clean)) return@forEach
+            if (looksLikeNamespace(clean)) {
+                if (acc.nsUrls.size < MAX_SAMPLES) acc.nsUrls.add(trimUrl(clean))
+            } else if (acc.httpUrls.size < MAX_SAMPLES) {
+                acc.httpUrls.add(trimUrl(clean))
             }
         }
         httpsRe.findAll(text).forEach {
             if (it.range.first >= fromIndex) {
                 acc.httpsCount++
-                if (validHost(it.value.substringAfter("://")) && acc.httpsUrls.size < MAX_SAMPLES) {
-                    acc.httpsUrls.add(trimUrl(it.value))
+                val clean = stripTrailingPunct(it.value)
+                if (validHost(clean.substringAfter("://")) && acc.httpsUrls.size < MAX_SAMPLES) {
+                    acc.httpsUrls.add(trimUrl(clean))
                 }
             }
         }
         ipRe.findAll(text).forEach {
-            if (validIp(it.value) && acc.ips.size < MAX_SAMPLES) {
+            if (validIp(it.value, text, it.range) && acc.ips.size < MAX_SAMPLES) {
                 acc.ips.putIfAbsent(it.value, contextAround(text, it.range))
             }
         }
@@ -315,6 +322,7 @@ object DexStrings {
     private fun build(acc: Acc, scanned: Long, truncated: Boolean, exactStrings: Boolean) =
         Result(
             httpUrls = acc.httpUrls.toList(),
+            nsUrls = acc.nsUrls.toList(),
             httpsCount = acc.httpsCount,
             httpsUrls = acc.httpsUrls.toList(),
             ips = acc.ips.map { IpHit(it.key, it.value) },
@@ -358,10 +366,61 @@ object DexStrings {
         return if (clean.length > 120) clean.take(117) + "..." else clean
     }
 
-    private fun validIp(ip: String): Boolean {
+    /** Quita puntuación final de prosa ("mira https://a.bc/x."). */
+    internal fun stripTrailingPunct(url: String): String =
+        url.dropLastWhile { it in ".,;:!?)]}\"" }
+
+    /** Hosts de organismos de estándares: sus URLs son identificadores, no tráfico. */
+    private val nsExactHosts = setOf(
+        "w3.org", "xml.org", "oasis-open.org", "dashif.org", "aomedia.org",
+        "schemas.microsoft.com", "schemas.android.com", "schemas.xmlsoap.org",
+        "schemas.openxmlformats.org", "ns.adobe.com", "xmlpull.org", "xml.org"
+    )
+
+    internal fun looksLikeNamespace(url: String): Boolean {
+        val host = urlHost(url).lowercase()
+        if (host.isEmpty()) return false
+        if (host in nsExactHosts || host.endsWith(".w3.org")) return true
+        if ("schemas." in host || host.startsWith("ns.")) return true
+        return false
+    }
+
+    internal fun urlHost(url: String): String {
+        val auth = url.substringAfter("://", "")
+            .substringBefore('/').substringBefore('?').substringBefore('#')
+        val noUser = auth.substringAfterLast('@')
+        return if (noUser.startsWith("[")) {
+            noUser.substringBefore(']') + "]"
+        } else {
+            noUser.substringBefore(':')
+        }
+    }
+
+    /** Versiones (Chrome/124.0.0.0, Tizen 4.0.0.2) y OIDs (1.3.6.1...) no son IPs. */
+    private val versionPrefixRe =
+        Regex("(?i)\\b(chrome|chromium|version|safari|firefox|tizen|android|ios|edge|opera|mozilla|applewebkit|gecko|build|crios|fxios|edg|samsungbrowser|ucbrowser|miuibrowser)[/: ][^\\s]{0,4}$|\\bv=[\"']?$")
+
+    private fun validIp(ip: String, text: String, range: IntRange): Boolean {
         val parts = ip.split(".")
         if (parts.size != 4) return false
-        return parts.all { (it.toIntOrNull() ?: 256) in 0..255 }
+        if (!parts.all { (it.toIntOrNull() ?: 256) in 0..255 }) return false
+        // N.0.0.0 es dirección de red (o versión Chrome), nunca un host.
+        if (parts[1] == "0" && parts[2] == "0" && parts[3] == "0") return false
+        // Parte de una corrida punteada más larga (OID, versión extendida).
+        val before = text.getOrNull(range.first - 1)
+        val after = text.getOrNull(range.last + 1)
+        if (before != null && (before.isDigit() || before == '.')) return false
+        if (after != null && (after.isDigit() || after == '.')) return false
+        // Chrome/124.0.0.0 sí; http://1.2.3.4/ no (ahí es host).
+        if (before == '/') {
+            val prev = range.first - 2
+            val isScheme = prev >= 1 && text[prev] == '/' && text[prev - 1] == ':'
+            if (!isScheme) return false
+        }
+        // Tizen 4.0.0.2, Version 1.2.3.4
+        val behind = text.substring(maxOf(0, range.first - 20), range.first)
+        if (versionPrefixRe.containsMatchIn(behind)) return false
+        return true
     }
 
     private fun contextAround(text: String, range: IntRange): String {
