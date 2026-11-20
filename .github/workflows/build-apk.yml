@@ -45,8 +45,8 @@ jobs:
           {
             echo 'Build APK failed, see tail of the logs:'
             echo '```'
-            tail -c 25000 test.log 2>/dev/null
-            tail -c 25000 build.log 2>/dev/null
+            tail -c 25000 test.log 2>/dev/null || echo '(sin test.log)'
+            tail -c 25000 build.log 2>/dev/null || echo '(sin build.log)'
             echo '```'
           } > failure-report.md
           gh issue create --title "CI failure: Build APK" --body-file failure-report.md
